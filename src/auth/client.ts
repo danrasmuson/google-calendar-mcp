@@ -1,6 +1,7 @@
 import { OAuth2Client } from 'google-auth-library';
 import * as fs from 'fs/promises';
 import { getKeysFilePath, generateCredentialsErrorMessage, OAuthCredentials } from './utils.js';
+import DopplerSDK from '@dopplerhq/node-sdk';
 
 async function loadCredentialsFromFile(): Promise<OAuthCredentials> {
   const keysContent = await fs.readFile(getKeysFilePath(), "utf-8");
@@ -23,23 +24,40 @@ async function loadCredentialsFromFile(): Promise<OAuthCredentials> {
 }
 
 async function loadCredentialsWithFallback(): Promise<OAuthCredentials> {
-  // First, try to load from Doppler environment variables
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const redirectUri = process.env.GOOGLE_REDIRECT_URI;
-
-  if (clientId && clientSecret && redirectUri) {
-    if (process.env.NODE_ENV !== 'test') {
-      process.stderr.write('Loading OAuth credentials from Doppler environment variables\n');
+  // Load from Doppler using the SDK
+  try {
+    const dopplerToken = process.env.DOPPLER_TOKEN;
+    if (!dopplerToken) {
+      throw new Error('DOPPLER_TOKEN environment variable not set');
     }
+
+    const doppler = new DopplerSDK({ accessToken: dopplerToken });
+
+    // Fetch all required secrets from Doppler
+    const secretsResponse = await doppler.secrets.list('home_automation', 'prd');
+
+    const secrets = secretsResponse.secrets || {};
+
+    const clientId = secrets.GOOGLE_CLIENT_ID?.computed;
+    const clientSecret = secrets.GOOGLE_CLIENT_SECRET?.computed;
+    const redirectUri = secrets.GOOGLE_REDIRECT_URI?.computed;
+
+    if (!clientId || !clientSecret || !redirectUri) {
+      throw new Error('Doppler OAuth credentials not found. Please ensure GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI are set in Doppler.');
+    }
+
+    if (process.env.NODE_ENV !== 'test') {
+      process.stderr.write('Loading OAuth credentials from Doppler via SDK\n');
+    }
+
     return {
       client_id: clientId,
       client_secret: clientSecret,
       redirect_uris: [redirectUri]
     };
+  } catch (error) {
+    throw new Error(`Failed to load OAuth credentials from Doppler: ${error instanceof Error ? error.message : error}`);
   }
-
-  throw new Error('Doppler OAuth credentials not found. Please ensure GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI environment variables are set.');
 }
 
 export async function initializeOAuth2Client(): Promise<OAuth2Client> {

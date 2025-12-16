@@ -4,10 +4,7 @@ import { getSecureTokenPath, getAccountMode, getLegacyTokenPath } from './utils.
 import { GaxiosError } from 'gaxios';
 import { mkdir } from 'fs/promises';
 import { dirname } from 'path';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-
-const execAsync = promisify(exec);
+import DopplerSDK from '@dopplerhq/node-sdk';
 
 // Cached calendar info
 interface CachedCalendar {
@@ -83,41 +80,47 @@ export class TokenManager {
   }
 
   /**
-   * Push tokens to Doppler using the doppler CLI
+   * Push tokens to Doppler using the Doppler SDK
    */
   private async pushTokensToDoppler(tokens: Credentials): Promise<void> {
     try {
-      const commands: string[] = [];
+      // Initialize Doppler SDK with service token from environment
+      const dopplerToken = process.env.DOPPLER_TOKEN;
+      if (!dopplerToken) {
+        throw new Error('DOPPLER_TOKEN environment variable not set');
+      }
 
-      // Update access token in Doppler
+      const doppler = new DopplerSDK({ accessToken: dopplerToken });
+
+      // Prepare secrets to update
+      const secrets: Record<string, string> = {};
+
       if (tokens.access_token) {
-        commands.push(`doppler secrets set DANRASMUSON_GOOGLE_ACCESS_TOKEN="${tokens.access_token}" --project=home_automation --silent`);
+        secrets.DANRASMUSON_GOOGLE_ACCESS_TOKEN = tokens.access_token;
       }
 
-      // Update refresh token in Doppler
       if (tokens.refresh_token) {
-        commands.push(`doppler secrets set DANRASMUSON_GOOGLE_REFRESH_TOKEN="${tokens.refresh_token}" --project=home_automation --silent`);
+        secrets.DANRASMUSON_GOOGLE_REFRESH_TOKEN = tokens.refresh_token;
       }
 
-      // Update expiry date
       if (tokens.expiry_date) {
-        commands.push(`doppler secrets set DANRASMUSON_GOOGLE_TOKEN_EXPIRY_DATE="${tokens.expiry_date}" --project=home_automation --silent`);
+        secrets.DANRASMUSON_GOOGLE_TOKEN_EXPIRY_DATE = String(tokens.expiry_date);
       }
 
-      // Update scope if present
       if (tokens.scope) {
-        commands.push(`doppler secrets set DANRASMUSON_GOOGLE_TOKEN_SCOPE="${tokens.scope}" --project=home_automation --silent`);
+        secrets.DANRASMUSON_GOOGLE_TOKEN_SCOPE = tokens.scope;
       }
 
-      // Update token type if present
       if (tokens.token_type) {
-        commands.push(`doppler secrets set DANRASMUSON_GOOGLE_TOKEN_TYPE="${tokens.token_type}" --project=home_automation --silent`);
+        secrets.DANRASMUSON_GOOGLE_TOKEN_TYPE = tokens.token_type;
       }
 
-      // Execute all commands
-      for (const command of commands) {
-        await execAsync(command, { shell: '/bin/bash' });
-      }
+      // Update all secrets in Doppler in one call
+      await doppler.secrets.update({
+        project: 'home_automation',
+        config: 'prd',
+        secrets: secrets
+      });
 
       if (process.env.NODE_ENV !== 'test') {
         process.stderr.write('Successfully pushed refreshed tokens to Doppler\n');
@@ -129,67 +132,61 @@ export class TokenManager {
   }
 
   private async loadMultiAccountTokens(): Promise<MultiAccountTokens> {
-    // Load tokens from Doppler environment variables
-    const accessToken = process.env.DANRASMUSON_GOOGLE_ACCESS_TOKEN;
-    const refreshToken = process.env.DANRASMUSON_GOOGLE_REFRESH_TOKEN;
-    const scope = process.env.DANRASMUSON_GOOGLE_TOKEN_SCOPE || 'https://www.googleapis.com/auth/calendar';
-    const tokenType = process.env.DANRASMUSON_GOOGLE_TOKEN_TYPE || 'Bearer';
-    const expiryDate = process.env.DANRASMUSON_GOOGLE_TOKEN_EXPIRY_DATE;
-    const refreshTokenExpiresIn = process.env.DANRASMUSON_GOOGLE_REFRESH_TOKEN_EXPIRES_IN;
+    // Load tokens from Doppler using the SDK
+    try {
+      const dopplerToken = process.env.DOPPLER_TOKEN;
+      if (!dopplerToken) {
+        throw new Error('DOPPLER_TOKEN environment variable not set');
+      }
 
-    if (!accessToken || !refreshToken) {
-      throw new Error('Doppler tokens not found. Please ensure DANRASMUSON_GOOGLE_ACCESS_TOKEN and DANRASMUSON_GOOGLE_REFRESH_TOKEN environment variables are set.');
+      const doppler = new DopplerSDK({ accessToken: dopplerToken });
+
+      // Fetch all required secrets from Doppler
+      const secretsResponse = await doppler.secrets.list('home_automation', 'prd');
+
+      const secrets = secretsResponse.secrets || {};
+
+      const accessToken = secrets.DANRASMUSON_GOOGLE_ACCESS_TOKEN?.computed;
+      const refreshToken = secrets.DANRASMUSON_GOOGLE_REFRESH_TOKEN?.computed;
+      const scope = secrets.DANRASMUSON_GOOGLE_TOKEN_SCOPE?.computed || 'https://www.googleapis.com/auth/calendar';
+      const tokenType = secrets.DANRASMUSON_GOOGLE_TOKEN_TYPE?.computed || 'Bearer';
+      const expiryDate = secrets.DANRASMUSON_GOOGLE_TOKEN_EXPIRY_DATE?.computed;
+      const refreshTokenExpiresIn = secrets.DANRASMUSON_GOOGLE_REFRESH_TOKEN_EXPIRES_IN?.computed;
+
+      if (!accessToken || !refreshToken) {
+        throw new Error('Doppler tokens not found. Please ensure DANRASMUSON_GOOGLE_ACCESS_TOKEN and DANRASMUSON_GOOGLE_REFRESH_TOKEN are set in Doppler.');
+      }
+
+      if (process.env.NODE_ENV !== 'test') {
+        process.stderr.write('Loading tokens from Doppler via SDK\n');
+      }
+
+      // Return tokens in the expected multi-account format
+      const credentials: CachedCredentials = {
+        access_token: accessToken,
+        refresh_token: refreshToken,
+        scope: scope,
+        token_type: tokenType,
+        expiry_date: expiryDate ? parseInt(expiryDate) : undefined,
+        refresh_token_expires_in: refreshTokenExpiresIn ? parseInt(refreshTokenExpiresIn) : undefined
+      };
+
+      return {
+        normal: credentials
+      };
+    } catch (error) {
+      throw new Error(`Failed to load tokens from Doppler: ${error instanceof Error ? error.message : error}`);
     }
-
-    if (process.env.NODE_ENV !== 'test') {
-      process.stderr.write('Loading tokens from Doppler environment variables\n');
-    }
-
-    // Return tokens in the expected multi-account format
-    const credentials: CachedCredentials = {
-      access_token: accessToken,
-      refresh_token: refreshToken,
-      scope: scope,
-      token_type: tokenType,
-      expiry_date: expiryDate ? parseInt(expiryDate) : undefined,
-      refresh_token_expires_in: refreshTokenExpiresIn ? parseInt(refreshTokenExpiresIn) : undefined
-    };
-
-    return {
-      normal: credentials
-    };
   }
 
   /**
    * Raw token file read without migration logic.
    * Used for atomic read-modify-write operations where we need to re-read current state.
-   * Modified to use Doppler tokens instead of file-based tokens.
+   * Modified to use Doppler SDK instead of file-based tokens.
    */
   private async loadMultiAccountTokensRaw(): Promise<MultiAccountTokens> {
     // Use the same Doppler-based loading as loadMultiAccountTokens
-    const accessToken = process.env.DANRASMUSON_GOOGLE_ACCESS_TOKEN;
-    const refreshToken = process.env.DANRASMUSON_GOOGLE_REFRESH_TOKEN;
-    const scope = process.env.DANRASMUSON_GOOGLE_TOKEN_SCOPE || 'https://www.googleapis.com/auth/calendar';
-    const tokenType = process.env.DANRASMUSON_GOOGLE_TOKEN_TYPE || 'Bearer';
-    const expiryDate = process.env.DANRASMUSON_GOOGLE_TOKEN_EXPIRY_DATE;
-    const refreshTokenExpiresIn = process.env.DANRASMUSON_GOOGLE_REFRESH_TOKEN_EXPIRES_IN;
-
-    if (!accessToken || !refreshToken) {
-      throw new Error('Doppler tokens not found. Please ensure DANRASMUSON_GOOGLE_ACCESS_TOKEN and DANRASMUSON_GOOGLE_REFRESH_TOKEN environment variables are set.');
-    }
-
-    const credentials: CachedCredentials = {
-      access_token: accessToken,
-      refresh_token: refreshToken,
-      scope: scope,
-      token_type: tokenType,
-      expiry_date: expiryDate ? parseInt(expiryDate) : undefined,
-      refresh_token_expires_in: refreshTokenExpiresIn ? parseInt(refreshTokenExpiresIn) : undefined
-    };
-
-    return {
-      normal: credentials
-    };
+    return this.loadMultiAccountTokens();
   }
 
   private async saveMultiAccountTokens(multiAccountTokens: MultiAccountTokens): Promise<void> {
