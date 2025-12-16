@@ -4,6 +4,10 @@ import { getSecureTokenPath, getAccountMode, getLegacyTokenPath } from './utils.
 import { GaxiosError } from 'gaxios';
 import { mkdir } from 'fs/promises';
 import { dirname } from 'path';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 // Cached calendar info
 interface CachedCalendar {
@@ -75,6 +79,32 @@ export class TokenManager {
       await mkdir(dirname(this.tokenPath), { recursive: true });
     } catch (error) {
       process.stderr.write(`Failed to create token directory: ${error}\n`);
+    }
+  }
+
+  /**
+   * Push tokens to Doppler using the doppler CLI
+   */
+  private async pushTokensToDoppler(accessToken: string, refreshToken: string): Promise<void> {
+    try {
+      // Update access token in Doppler
+      await execAsync(
+        `doppler secrets set DANRASMUSON_GOOGLE_ACCESS_TOKEN="${accessToken}" --project=home_automation --silent`,
+        { shell: '/bin/bash' }
+      );
+
+      // Update refresh token in Doppler
+      await execAsync(
+        `doppler secrets set DANRASMUSON_GOOGLE_REFRESH_TOKEN="${refreshToken}" --project=home_automation --silent`,
+        { shell: '/bin/bash' }
+      );
+
+      if (process.env.NODE_ENV !== 'test') {
+        process.stderr.write('Successfully pushed refreshed tokens to Doppler\n');
+      }
+    } catch (error) {
+      process.stderr.write(`Warning: Failed to push tokens to Doppler: ${error instanceof Error ? error.message : error}\n`);
+      // Don't throw - token refresh worked, just couldn't update Doppler
     }
   }
 
@@ -165,23 +195,23 @@ export class TokenManager {
   private setupTokenRefreshForAccount(client: OAuth2Client, accountId: string): void {
     client.on("tokens", async (newTokens) => {
       try {
-        // Wrap entire read-modify-write in the queue to prevent race conditions
-        await this.enqueueTokenWrite(async () => {
-          const multiAccountTokens = await this.loadMultiAccountTokens();
-          const currentTokens = multiAccountTokens[accountId] || {};
+        // Get current tokens to preserve refresh token if not in newTokens
+        const multiAccountTokens = await this.loadMultiAccountTokens();
+        const currentTokens = multiAccountTokens[accountId] || {};
 
-          const updatedTokens = {
-            ...currentTokens,
-            ...newTokens,
-            refresh_token: newTokens.refresh_token || currentTokens.refresh_token,
-          };
+        const updatedTokens = {
+          ...currentTokens,
+          ...newTokens,
+          refresh_token: newTokens.refresh_token || currentTokens.refresh_token,
+        };
 
-          multiAccountTokens[accountId] = updatedTokens;
-          await this.ensureTokenDirectoryExists();
-          await fs.writeFile(this.tokenPath, JSON.stringify(multiAccountTokens, null, 2), {
-            mode: 0o600,
-          });
-        });
+        // Push updated tokens to Doppler
+        if (updatedTokens.access_token && updatedTokens.refresh_token) {
+          await this.pushTokensToDoppler(
+            updatedTokens.access_token,
+            updatedTokens.refresh_token
+          );
+        }
 
         if (process.env.NODE_ENV !== 'test') {
           process.stderr.write(`Tokens updated and saved for ${accountId} account\n`);
