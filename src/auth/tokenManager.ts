@@ -85,19 +85,39 @@ export class TokenManager {
   /**
    * Push tokens to Doppler using the doppler CLI
    */
-  private async pushTokensToDoppler(accessToken: string, refreshToken: string): Promise<void> {
+  private async pushTokensToDoppler(tokens: Credentials): Promise<void> {
     try {
+      const commands: string[] = [];
+
       // Update access token in Doppler
-      await execAsync(
-        `doppler secrets set DANRASMUSON_GOOGLE_ACCESS_TOKEN="${accessToken}" --project=home_automation --silent`,
-        { shell: '/bin/bash' }
-      );
+      if (tokens.access_token) {
+        commands.push(`doppler secrets set DANRASMUSON_GOOGLE_ACCESS_TOKEN="${tokens.access_token}" --project=home_automation --silent`);
+      }
 
       // Update refresh token in Doppler
-      await execAsync(
-        `doppler secrets set DANRASMUSON_GOOGLE_REFRESH_TOKEN="${refreshToken}" --project=home_automation --silent`,
-        { shell: '/bin/bash' }
-      );
+      if (tokens.refresh_token) {
+        commands.push(`doppler secrets set DANRASMUSON_GOOGLE_REFRESH_TOKEN="${tokens.refresh_token}" --project=home_automation --silent`);
+      }
+
+      // Update expiry date
+      if (tokens.expiry_date) {
+        commands.push(`doppler secrets set DANRASMUSON_GOOGLE_TOKEN_EXPIRY_DATE="${tokens.expiry_date}" --project=home_automation --silent`);
+      }
+
+      // Update scope if present
+      if (tokens.scope) {
+        commands.push(`doppler secrets set DANRASMUSON_GOOGLE_TOKEN_SCOPE="${tokens.scope}" --project=home_automation --silent`);
+      }
+
+      // Update token type if present
+      if (tokens.token_type) {
+        commands.push(`doppler secrets set DANRASMUSON_GOOGLE_TOKEN_TYPE="${tokens.token_type}" --project=home_automation --silent`);
+      }
+
+      // Execute all commands
+      for (const command of commands) {
+        await execAsync(command, { shell: '/bin/bash' });
+      }
 
       if (process.env.NODE_ENV !== 'test') {
         process.stderr.write('Successfully pushed refreshed tokens to Doppler\n');
@@ -112,6 +132,10 @@ export class TokenManager {
     // Load tokens from Doppler environment variables
     const accessToken = process.env.DANRASMUSON_GOOGLE_ACCESS_TOKEN;
     const refreshToken = process.env.DANRASMUSON_GOOGLE_REFRESH_TOKEN;
+    const scope = process.env.DANRASMUSON_GOOGLE_TOKEN_SCOPE || 'https://www.googleapis.com/auth/calendar';
+    const tokenType = process.env.DANRASMUSON_GOOGLE_TOKEN_TYPE || 'Bearer';
+    const expiryDate = process.env.DANRASMUSON_GOOGLE_TOKEN_EXPIRY_DATE;
+    const refreshTokenExpiresIn = process.env.DANRASMUSON_GOOGLE_REFRESH_TOKEN_EXPIRES_IN;
 
     if (!accessToken || !refreshToken) {
       throw new Error('Doppler tokens not found. Please ensure DANRASMUSON_GOOGLE_ACCESS_TOKEN and DANRASMUSON_GOOGLE_REFRESH_TOKEN environment variables are set.');
@@ -125,8 +149,10 @@ export class TokenManager {
     const credentials: CachedCredentials = {
       access_token: accessToken,
       refresh_token: refreshToken,
-      scope: 'https://www.googleapis.com/auth/calendar',
-      token_type: 'Bearer'
+      scope: scope,
+      token_type: tokenType,
+      expiry_date: expiryDate ? parseInt(expiryDate) : undefined,
+      refresh_token_expires_in: refreshTokenExpiresIn ? parseInt(refreshTokenExpiresIn) : undefined
     };
 
     return {
@@ -143,6 +169,10 @@ export class TokenManager {
     // Use the same Doppler-based loading as loadMultiAccountTokens
     const accessToken = process.env.DANRASMUSON_GOOGLE_ACCESS_TOKEN;
     const refreshToken = process.env.DANRASMUSON_GOOGLE_REFRESH_TOKEN;
+    const scope = process.env.DANRASMUSON_GOOGLE_TOKEN_SCOPE || 'https://www.googleapis.com/auth/calendar';
+    const tokenType = process.env.DANRASMUSON_GOOGLE_TOKEN_TYPE || 'Bearer';
+    const expiryDate = process.env.DANRASMUSON_GOOGLE_TOKEN_EXPIRY_DATE;
+    const refreshTokenExpiresIn = process.env.DANRASMUSON_GOOGLE_REFRESH_TOKEN_EXPIRES_IN;
 
     if (!accessToken || !refreshToken) {
       throw new Error('Doppler tokens not found. Please ensure DANRASMUSON_GOOGLE_ACCESS_TOKEN and DANRASMUSON_GOOGLE_REFRESH_TOKEN environment variables are set.');
@@ -151,8 +181,10 @@ export class TokenManager {
     const credentials: CachedCredentials = {
       access_token: accessToken,
       refresh_token: refreshToken,
-      scope: 'https://www.googleapis.com/auth/calendar',
-      token_type: 'Bearer'
+      scope: scope,
+      token_type: tokenType,
+      expiry_date: expiryDate ? parseInt(expiryDate) : undefined,
+      refresh_token_expires_in: refreshTokenExpiresIn ? parseInt(refreshTokenExpiresIn) : undefined
     };
 
     return {
@@ -206,12 +238,7 @@ export class TokenManager {
         };
 
         // Push updated tokens to Doppler
-        if (updatedTokens.access_token && updatedTokens.refresh_token) {
-          await this.pushTokensToDoppler(
-            updatedTokens.access_token,
-            updatedTokens.refresh_token
-          );
-        }
+        await this.pushTokensToDoppler(updatedTokens);
 
         if (process.env.NODE_ENV !== 'test') {
           process.stderr.write(`Tokens updated and saved for ${accountId} account\n`);
