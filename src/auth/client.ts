@@ -23,14 +23,23 @@ async function loadCredentialsFromFile(): Promise<OAuthCredentials> {
 }
 
 async function loadCredentialsWithFallback(): Promise<OAuthCredentials> {
-  // Load credentials from file (CLI param, env var, or default path)
-  try {
-    return await loadCredentialsFromFile();
-  } catch (fileError) {
-    // Generate helpful error message
-    const errorMessage = generateCredentialsErrorMessage();
-    throw new Error(`${errorMessage}\n\nOriginal error: ${fileError instanceof Error ? fileError.message : fileError}`);
+  // First, try to load from Doppler environment variables
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const redirectUri = process.env.GOOGLE_REDIRECT_URI;
+
+  if (clientId && clientSecret && redirectUri) {
+    if (process.env.NODE_ENV !== 'test') {
+      process.stderr.write('Loading OAuth credentials from Doppler environment variables\n');
+    }
+    return {
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uris: [redirectUri]
+    };
   }
+
+  throw new Error('Doppler OAuth credentials not found. Please ensure GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REDIRECT_URI environment variables are set.');
 }
 
 export async function initializeOAuth2Client(): Promise<OAuth2Client> {

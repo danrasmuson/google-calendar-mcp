@@ -79,45 +79,55 @@ export class TokenManager {
   }
 
   private async loadMultiAccountTokens(): Promise<MultiAccountTokens> {
-    try {
-      const fileContent = await fs.readFile(this.tokenPath, "utf-8");
-      const parsed = JSON.parse(fileContent);
+    // Load tokens from Doppler environment variables
+    const accessToken = process.env.DANRASMUSON_GOOGLE_ACCESS_TOKEN;
+    const refreshToken = process.env.DANRASMUSON_GOOGLE_REFRESH_TOKEN;
 
-      // Check if this is the old single-account format
-      if (parsed.access_token || parsed.refresh_token) {
-        // Convert old format to new multi-account format
-        const multiAccountTokens: MultiAccountTokens = {
-          normal: parsed
-        };
-        await this.saveMultiAccountTokens(multiAccountTokens);
-        return multiAccountTokens;
-      }
-
-      // Already in multi-account format
-      return parsed as MultiAccountTokens;
-    } catch (error: unknown) {
-      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-        // File doesn't exist, return empty structure
-        return {};
-      }
-      throw error;
+    if (!accessToken || !refreshToken) {
+      throw new Error('Doppler tokens not found. Please ensure DANRASMUSON_GOOGLE_ACCESS_TOKEN and DANRASMUSON_GOOGLE_REFRESH_TOKEN environment variables are set.');
     }
+
+    if (process.env.NODE_ENV !== 'test') {
+      process.stderr.write('Loading tokens from Doppler environment variables\n');
+    }
+
+    // Return tokens in the expected multi-account format
+    const credentials: CachedCredentials = {
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      scope: 'https://www.googleapis.com/auth/calendar',
+      token_type: 'Bearer'
+    };
+
+    return {
+      normal: credentials
+    };
   }
 
   /**
    * Raw token file read without migration logic.
    * Used for atomic read-modify-write operations where we need to re-read current state.
+   * Modified to use Doppler tokens instead of file-based tokens.
    */
   private async loadMultiAccountTokensRaw(): Promise<MultiAccountTokens> {
-    try {
-      const fileContent = await fs.readFile(this.tokenPath, "utf-8");
-      return JSON.parse(fileContent) as MultiAccountTokens;
-    } catch (error: unknown) {
-      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-        return {};
-      }
-      throw error;
+    // Use the same Doppler-based loading as loadMultiAccountTokens
+    const accessToken = process.env.DANRASMUSON_GOOGLE_ACCESS_TOKEN;
+    const refreshToken = process.env.DANRASMUSON_GOOGLE_REFRESH_TOKEN;
+
+    if (!accessToken || !refreshToken) {
+      throw new Error('Doppler tokens not found. Please ensure DANRASMUSON_GOOGLE_ACCESS_TOKEN and DANRASMUSON_GOOGLE_REFRESH_TOKEN environment variables are set.');
     }
+
+    const credentials: CachedCredentials = {
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      scope: 'https://www.googleapis.com/auth/calendar',
+      token_type: 'Bearer'
+    };
+
+    return {
+      normal: credentials
+    };
   }
 
   private async saveMultiAccountTokens(multiAccountTokens: MultiAccountTokens): Promise<void> {
